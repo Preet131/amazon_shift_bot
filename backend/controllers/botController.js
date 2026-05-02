@@ -4,18 +4,17 @@ import User from "../models/User.js";
 // POST /api/bot/start
 export const botStart = async (req, res) => {
   try {
-    const userId = req.user.id;
-    const user = await User.findById(userId);
+    const user = await User.findById(req.user.id);
+    if (!user.amazonAccessToken) {
+      return res.status(400).json({ msg: "Amazon account not connected." });
+    }
 
-    if (!user.amazonAccessToken)
-      return res.status(400).json({
-        msg: "Amazon session not set up. Call POST /api/amazon-auth/login first.",
-      });
-
-    const intervalMinutes = parseInt(req.body.intervalMinutes) || 5;
-    startBot(userId, intervalMinutes);
-
-    res.json({ msg: `Bot started. Scanning every ${intervalMinutes} minute(s).` });
+    // Default to 300s (5m) if not provided
+    const intervalSeconds = req.body.intervalSeconds || (req.body.intervalMinutes ? req.body.intervalMinutes * 60 : 300);
+    
+    startBot(req.user.id, intervalSeconds);
+    
+    res.json({ msg: "Bot started successfully.", intervalSeconds });
   } catch (err) {
     res.status(500).json({ msg: err.message });
   }

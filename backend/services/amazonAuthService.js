@@ -15,6 +15,27 @@ export const loginAndStoreTokens = async (userId) => {
 
   console.log(`🔐 Starting Amazon login for user ${userId}...`);
 
+  if (process.env.USE_MOCK_AMAZON === "true") {
+    console.log("🛠️  [Mock] Simulating Amazon login...");
+    const mockTokens = {
+      accessToken: "mock_access_token_" + Date.now(),
+      refreshToken: "mock_refresh_token_" + Date.now(),
+      idToken: "mock_id_token_" + Date.now(),
+      cookies: [{ name: "mock_cookie", value: "mock_value", domain: "amazon.ca" }]
+    };
+    
+    user.amazonAccessToken  = mockTokens.accessToken;
+    user.amazonRefreshToken = mockTokens.refreshToken;
+    user.amazonIdToken      = mockTokens.idToken;
+    user.amazonCookies      = JSON.stringify(mockTokens.cookies);
+    user.amazonTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000); 
+    user.lastAmazonLogin    = new Date();
+    await user.save();
+    
+    console.log(`✅ [Mock] Tokens stored for user ${userId}`);
+    return mockTokens;
+  }
+
   const tokens = await captureAmazonTokens(user);
 
   if (!tokens.accessToken && !tokens.cookies.length)

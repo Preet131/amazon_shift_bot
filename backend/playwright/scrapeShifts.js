@@ -16,6 +16,37 @@ export async function scrapeShifts(userId) {
   const user = await User.findById(userId);
   if (!user) throw new Error("User not found");
 
+  if (process.env.USE_MOCK_AMAZON === "true") {
+    console.log("🛠️  [Mock] Returning fake shifts...");
+    const mockShifts = [
+      {
+        title: "Warehouse Associate (Mock)",
+        location: "Toronto (Mock)",
+        pay: 22.50,
+        time: "10:00 AM - 6:00 PM",
+        startTime: "10:00 AM",
+        endTime: "6:00 PM"
+      },
+      {
+        title: "Sortation Associate (Mock)",
+        location: "Brampton (Mock)",
+        pay: 21.00,
+        time: "8:00 PM - 4:00 AM",
+        startTime: "8:00 PM",
+        endTime: "4:00 AM"
+      },
+      {
+        title: "Delivery Station Staff (Mock)",
+        location: "Mississauga (Mock)",
+        pay: 19.50,
+        time: "4:00 AM - 10:00 AM",
+        startTime: "4:00 AM",
+        endTime: "10:00 AM"
+      }
+    ];
+    return mockShifts;
+  }
+
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     userAgent:
@@ -25,10 +56,26 @@ export async function scrapeShifts(userId) {
   // 2. Restore stored cookies so Amazon treats this as the same session
   if (user.amazonCookies) {
     try {
-      const cookies = JSON.parse(user.amazonCookies);
-      await context.addCookies(cookies);
+      const parsed = JSON.parse(user.amazonCookies);
+      
+      // If it's the raw string we injected ("cookie1=val1; cookie2=val2") wrapped in our fake session object:
+      if (Array.isArray(parsed) && parsed.length === 1 && parsed[0].name === "session" && parsed[0].value.includes("=")) {
+        const rawString = parsed[0].value;
+        const formattedCookies = rawString.split(';').filter(Boolean).map(c => {
+          const parts = c.split('=');
+          return {
+            name: parts[0].trim(),
+            value: parts.slice(1).join('=').trim(),
+            domain: '.amazon.ca',
+            path: '/'
+          };
+        });
+        await context.addCookies(formattedCookies);
+      } else {
+        await context.addCookies(parsed);
+      }
     } catch {
-      console.warn("⚠️  Could not parse stored cookies");
+      console.warn("⚠️  Could not parse stored cookies. They might be invalid or empty.");
     }
   }
 

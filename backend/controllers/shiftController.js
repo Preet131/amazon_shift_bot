@@ -11,9 +11,27 @@ export const getShifts = async (req, res) => {
 
     if (!user) return res.status(404).json({ msg: "User not found" });
 
-    const shifts = await Shift.find({});
-    res.json(shifts);
+    const showAll = Boolean(req.body?.showAll);
+    const shifts = await Shift.find({}).lean();
 
+    const city = user.filters?.city?.trim() || null;
+    const minPay =
+      user.filters?.minPay != null && Number(user.filters.minPay) > 0
+        ? Number(user.filters.minPay)
+        : null;
+
+    const hasProfileFilters = !!(city || minPay != null);
+    const filteredList = showAll ? shifts : filterShifts(shifts, user);
+
+    res.json({
+      shifts: filteredList,
+      meta: {
+        showAll,
+        filtersApplied: !showAll && hasProfileFilters,
+        city,
+        minPay,
+      },
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ msg: "Error fetching shifts" });

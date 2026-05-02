@@ -10,11 +10,14 @@ import { waitForOtp } from "../services/otpService.js";
  * Returns { accessToken, refreshToken, idToken, cookies }
  */
 export async function captureAmazonTokens(user) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: false }); // keep it false for debugging
   const context = await browser.newContext({
-    userAgent:
-      "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    viewport: { width: 1280, height: 720 }
   });
+  // Mask Playwright
+  await context.addInitScript("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})");
+  
   const page = await context.newPage();
 
   const captured = { accessToken: null, refreshToken: null, idToken: null, cookies: [] };
@@ -45,27 +48,147 @@ export async function captureAmazonTokens(user) {
   try {
     await page.goto("https://hiring.amazon.ca/app#/login", { waitUntil: "networkidle", timeout: 30_000 });
 
+    // Handle "I consent" button if it appears
+    try {
+      console.log("Looking for 'I consent' button...");
+      const consentBtn = page.locator('button:has-text("I consent"), button:has-text("I Consent")');
+      await consentBtn.waitFor({ state: 'visible', timeout: 8000 });
+      await consentBtn.click();
+      console.log("✅ Clicked 'I consent' button.");
+    } catch (e) {
+      console.log("No 'I consent' button found or needed, proceeding...");
+    }
+
     // Email step
-    await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 15_000 });
-    await page.fill('input[type="email"], input[name="email"]', user.amazonEmail);
-    await page.click('button[type="submit"]');
+    const emailSelector = 'input[type="email"], input[name="email"], input[name="username"], input[id="signInFormUsername"], input#ap_email, input[autocomplete="username"]';
+    try {
+      await page.waitForSelector(emailSelector, { timeout: 10_000 });
+      await page.fill(emailSelector, user.amazonEmail);
+    } catch (e) {
+      console.log("Specific email selector failed, trying generic text input...");
+      // Fallback: Just grab the first visible text-like input
+      const fallbackInput = page.locator('input:not([type="hidden"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"])').first();
+      await fallbackInput.waitFor({ state: 'visible', timeout: 5000 });
+      await fallbackInput.fill(user.amazonEmail);
+    }
+    
+    // Click Next/Submit
+    await page.click('button[type="submit"], input[type="submit"], input[name="signInSubmitButton"], button:has-text("Next"), button:has-text("Continue")');
 
     // Password step
-    await page.waitForSelector('input[type="password"]', { timeout: 10_000 });
-    await page.fill('input[type="password"]', user.amazonPassword);
-    await page.click('button[type="submit"]');
+    const passSelector = 'input[type="password"], input[name="password"], input#ap_password';
+    try {
+      await page.waitForSelector(passSelector, { timeout: 10_000 });
+      await page.fill(passSelector, user.amazonPassword);
+      await page.locator(passSelector).press("Enter");
+    } catch (e) {
+      console.log("Specific password selector failed, trying generic password input...");
+      const fallbackPass = page.locator('input[type="password"]').first();
+      await fallbackPass.waitFor({ state: 'visible', timeout: 2000 });
+      await fallbackPass.fill(user.amazonPassword);
+      await fallbackPass.press("Enter");
+    }
+    
+    // Explicitly click sign in if Enter didn't work
+    try {
+      console.log("Attempting to click Sign In button...");
+      const locators = [
+        page.getByRole('button', { name: /sign in/i }),
+        page.getByRole('button', { name: /login/i }),
+        page.getByRole('button', { name: /submit/i }),
+        page.locator('input[type="submit"]:visible').first(),
+        page.locator('.a-button-input:visible').first()
+      ];
+      
+      let clicked = false;
+      for (const loc of locators) {
+        if (await loc.isVisible().catch(() => false)) {
+          await loc.click();
+          clicked = true;
+          console.log("Clicked button!");
+          break;
+        }
+      }
+      if (!clicked) console.log("Could not find a visible sign-in button.");
+    } catch (e) { 
+      console.log("Error while trying to click sign in.");
+    }
 
-    // ── OTP step (optional) ──────────────────────────────────────────────────
-    const otpSelector = 'input[name="code"], input[type="tel"], input[placeholder*="code" i]';
-    const otpVisible = await page.locator(otpSelector).isVisible({ timeout: 8_000 }).catch(() => false);
+    console.log("Submitted password.");
+
+    // ── OTP step / Captcha Wait ──────────────────────────────────────────────
+    console.log("Waiting for OTP screen, Captcha, or successful login (up to 60s)...");
+    
+    const sendCodeBtn = 'button:has-text("Send verification code"), input[name="sendCode"], button[name="mfaSubmit"]';
+    const otpSelector = 'input[name="code"], input[name="mfaCode"], input#auth-mfa-otpcode, input[autocomplete="one-time-code"], input[type="tel"]';
+    
+    let otpVisible = false;
+    for (let i = 0; i < 30; i++) {
+      if (captured.accessToken) {
+        console.log(`[Wait Loop ${i}] 🔑 Tokens captured behind the scenes!`);
+        break;
+      }
+      
+      // Check if the intermediate "Send verification code" screen appeared
+      try {
+        if (await page.locator(sendCodeBtn).isVisible()) {
+          console.log(`[Wait Loop ${i}] Found 'Send verification code' screen, clicking it...`);
+          await page.click(sendCodeBtn, { force: true });
+          await page.waitForTimeout(2000);
+        }
+      } catch(e) {}
+      
+      try {
+        otpVisible = await page.locator(otpSelector).isVisible();
+        console.log(`[Wait Loop ${i}] Checked primary OTP selector visibility: ${otpVisible}`);
+      } catch(e) {}
+      
+      // Fallback: check for any visible input that might be the OTP field
+      if (!otpVisible) {
+         try {
+           const genericInput = page.locator('input:not([type="hidden"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"])').first();
+           if (await genericInput.isVisible()) {
+             // Let's assume if a generic input appears after password, it's the OTP field!
+             console.log(`[Wait Loop ${i}] Found a generic input field, assuming it's the OTP box!`);
+             otpVisible = true;
+           }
+         } catch(e) {}
+      }
+      
+      if (otpVisible) break;
+      
+      await page.waitForTimeout(2000); // Check every 2 seconds
+    }
 
     if (otpVisible) {
-      console.log("📧 OTP screen detected – reading from email inbox...");
-      const otp = await waitForOtp(user);
-      await page.fill(otpSelector, otp);
-      await page.click('button[type="submit"]');
+      console.log("📧 OTP screen detected – initiating IMAP to read from email inbox...");
+      try {
+        const otp = await waitForOtp(user);
+        console.log(`✅ Extracted OTP from email: ${otp}`);
+        
+        console.log("Attempting to fill OTP box...");
+        try {
+          await page.fill(otpSelector, otp, { timeout: 3000 });
+          await page.locator(otpSelector).press("Enter");
+        } catch(e) {
+          console.log("Failed to fill using primary selector, trying generic input...");
+          const genericInput = page.locator('input:not([type="hidden"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"])').first();
+          await genericInput.fill(otp);
+          await genericInput.press("Enter");
+        }
+        
+        console.log("✅ OTP submitted. Waiting for login to finish...");
+      } catch (err) {
+        console.log(`❌ Error fetching OTP: ${err.message}`);
+      }
+      
+      // Wait a bit more for login to finish after entering OTP
+      for (let i = 0; i < 15; i++) {
+         if (captured.accessToken) break;
+         await page.waitForTimeout(2000);
+      }
     } else {
-      console.log("✅ No OTP required.");
+      console.log("✅ No OTP required or logged in successfully.");
     }
 
     // Wait for post-login network to settle

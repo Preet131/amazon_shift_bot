@@ -1,10 +1,31 @@
 import User from "../models/User.js";
 import { checkEligibility } from "../services/eligibilityService.js";
 
+const profileSelect =
+  "-password -amazonPassword -otpEmailPassword -amazonAccessToken -amazonRefreshToken -amazonIdToken -amazonCookies";
+
+export const getProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select(profileSelect).lean();
+    if (!user) return res.status(404).json({ msg: "User not found" });
+    res.json(user);
+  } catch (error) {
+    console.error("getProfile:", error);
+    res.status(500).json({ msg: "Server error" });
+  }
+};
+
 // 👉 Update user profile + run eligibility check
 export const updateProfile = async (req, res) => {
   try {
-    const { visaStatus, documents, amazonEmail, amazonPassword } = req.body;
+    const {
+      visaStatus,
+      documents,
+      sessionJson,
+      filters,
+      botSettings,
+      autoApplyProfile,
+    } = req.body;
     const userId = req.user.id;
 
     // 1. Find user
@@ -16,8 +37,39 @@ export const updateProfile = async (req, res) => {
     // 2. Update fields (only if provided)
     if (visaStatus) user.visaStatus = visaStatus;
     if (documents) user.documents = { ...user.documents, ...documents };
-    if (amazonEmail) user.amazonEmail = amazonEmail;
-    if (amazonPassword) user.amazonPassword = amazonPassword;
+    
+    // Process Session JSON
+    if (sessionJson) {
+      try {
+        const session = JSON.parse(sessionJson);
+        if (session.tokens) {
+          // Look for access token in localStorage dump
+          for (const [k, v] of Object.entries(session.tokens)) {
+            const kl = k.toLowerCase();
+            if (kl.includes("access")) user.amazonAccessToken = v;
+            if (kl.includes("refresh")) user.amazonRefreshToken = v;
+          }
+        }
+        if (session.cookies) {
+           // Basic cookie format
+           user.amazonCookies = JSON.stringify([{ name: "session", value: session.cookies, domain: ".amazon.ca", path: "/" }]);
+        }
+      } catch (e) {
+        console.error("Invalid session JSON provided:", e);
+      }
+    }
+    
+    if (filters) {
+      user.filters = { ...user.filters, ...filters };
+    }
+
+    if (botSettings && typeof botSettings === "object") {
+      user.botSettings = { ...user.botSettings, ...botSettings };
+    }
+
+    if (autoApplyProfile && typeof autoApplyProfile === "object") {
+      user.autoApplyProfile = { ...user.autoApplyProfile, ...autoApplyProfile };
+    }
 
     // 3. Run eligibility logic
     const result = checkEligibility(user);

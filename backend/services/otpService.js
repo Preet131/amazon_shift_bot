@@ -37,6 +37,9 @@ export const waitForOtp = async (user, maxWaitMs = 90_000) => {
     host: user.otpEmailHost || "imap.gmail.com",
     port: 993,
     secure: true,
+    authTimeout: 20_000,
+    connectionTimeout: 20_000,
+    socketTimeout: 30_000,
     auth: {
       user: user.otpEmail || user.email,
       pass: user.otpEmailPassword,
@@ -47,13 +50,29 @@ export const waitForOtp = async (user, maxWaitMs = 90_000) => {
   console.log(`📧 Connecting to ${config.auth.user} to wait for OTP...`);
 
   const client = new ImapFlow(config);
-  await client.connect();
+  let clientError = null;
+
+  // Prevent unhandled 'error' events from crashing the entire process.
+  client.on("error", (err) => {
+    clientError = err;
+    console.warn(`⚠️ IMAP error: ${err?.code || ""} ${err?.message || err}`);
+  });
+
+  try {
+    await client.connect();
+  } catch (err) {
+    throw new Error(`Could not connect to IMAP (${err?.code || "ERR"}): ${err.message}`);
+  }
 
   const deadline = Date.now() + maxWaitMs;
   const searchSince = new Date(Date.now() - 3 * 60_000); // look at last 3 min
 
   try {
     while (Date.now() < deadline) {
+      if (clientError) {
+        throw new Error(`IMAP connection error: ${clientError.message}`);
+      }
+
       const lock = await client.getMailboxLock("INBOX");
       try {
         const uids = await client.search(

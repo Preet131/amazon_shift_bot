@@ -6,7 +6,6 @@ import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 
 import shiftRoutes from "./routes/shiftRoutes.js";
-import amazonAuthRoutes from "./routes/amazonAuthRoutes.js";
 import botRoutes from "./routes/botRoutes.js";
 
 import { fileURLToPath } from "url";
@@ -25,7 +24,6 @@ app.use(express.json());
 app.use("/api/auth",         authRoutes);
 app.use("/api/user",         userRoutes);
 app.use("/api/shifts",       shiftRoutes);
-app.use("/api/amazon-auth",  amazonAuthRoutes);
 app.use("/api/bot",          botRoutes);
 
 mongoose.connect(process.env.MONGO_URI)

@@ -109,18 +109,9 @@ In **Profile → Shift Filters**
 - **Min Pay**: example `20`
 - Click **Save Profile & Session**
 
-### 4) Connect Amazon session (required for scanning & applying)
+### 4) Add Amazon session (required for scanning & applying)
 
-You have 2 ways:
-
-#### Option A (Easiest): “Connect Amazon” button
-
-- Go to **Amazon Account**
-- Click **Connect Amazon**
-- A browser opens and the app tries to capture tokens/cookies automatically
-- If Amazon requests an OTP, configure **OTP Email Config** on that same page (Gmail requires an App Password)
-
-#### Option B (Manual): Paste “Session JSON”
+Use the manual Session JSON method:
 
 If the auto-capture struggles, you can manually extract your session:
 
@@ -198,9 +189,10 @@ When the bot finds a new shift matching your city/min pay filters:
 - Confirm **Profile → Telegram chat ID** is set
 - Restart `npm run dev` after editing `.env`
 
-### Amazon connect fails / captcha
-- Use the **Manual Session JSON** method
-- Or re-run **Connect Amazon**
+### Session JSON expired / captcha
+- Re-login on `hiring.amazon.ca`
+- Generate a fresh **Session JSON**
+- Save it again in **Profile → Amazon Session Injection**
 
 ### Auto-apply clicks the wrong thing
 - Amazon UI changes frequently; selector tuning may be required.

@@ -20,12 +20,25 @@ function parseCookiesFromUser(user) {
           return {
             name: parts[0].trim(),
             value: parts.slice(1).join("=").trim(),
-            domain: ".amazon.ca",
+            // Preserve host-only behavior for manual document.cookie imports.
+            url: "https://hiring.amazon.ca",
             path: "/",
           };
         });
     }
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((c) => c && typeof c === "object" && c.name && c.value != null)
+      .map((c) => {
+        const cookie = {
+          ...c,
+          name: String(c.name).trim(),
+          value: String(c.value),
+        };
+        if (!cookie.path) cookie.path = "/";
+        if (!cookie.url && !cookie.domain) cookie.url = "https://hiring.amazon.ca";
+        return cookie;
+      });
   } catch {
     return [];
   }
@@ -44,6 +57,26 @@ function timeWithinWindow(label, start, end) {
   const from = normalizeTimeValue(start);
   const to = normalizeTimeValue(end);
   return t.includes(from) || t.includes(to);
+}
+
+async function dismissConsentPopup(page) {
+  const selectors = [
+    'button:has-text("I consent")',
+    'button:has-text("I Consent")',
+    'button:has-text("Accept all")',
+    'button:has-text("Accept All")',
+    'button:has-text("Accept")',
+    "#onetrust-accept-btn-handler",
+  ];
+  for (const sel of selectors) {
+    const btn = page.locator(sel).first();
+    if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await btn.click({ timeout: 3000 }).catch(() => {});
+      await page.waitForTimeout(400);
+      return true;
+    }
+  }
+  return false;
 }
 
 async function clickFirstVisible(page, selectors, timeout = 3000) {
@@ -117,6 +150,9 @@ export async function runPlaywrightAutoApplyFlow(user, shift) {
       waitUntil: "networkidle",
       timeout: 30_000,
     });
+
+    // Consent/cookie overlays can block Apply/Create Application buttons.
+    await dismissConsentPopup(page);
 
     // 0) Open matching shift and click "Create Application" immediately.
     const shiftTitle = String(shift?.title || "").trim();

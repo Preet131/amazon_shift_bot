@@ -1,69 +1,18 @@
 import User from "../models/User.js";
-import { captureAmazonTokens } from "../playwright/captureTokens.js";
 
 const REFRESH_BUFFER_MS = 10 * 60 * 1000; // refresh 10 min before expiry
 
 /**
- * Full Playwright login — captures + stores tokens in DB.
- * Called on first login or when refresh_token is also expired.
- */
-export const loginAndStoreTokens = async (userId) => {
-  const user = await User.findById(userId);
-  if (!user) throw new Error("User not found");
-  if (!user.amazonEmail || !user.amazonPassword)
-    throw new Error("Amazon credentials not set. Call /api/user/update-profile first.");
-
-  console.log(`🔐 Starting Amazon login for user ${userId}...`);
-
-  if (process.env.USE_MOCK_AMAZON === "true") {
-    console.log("🛠️  [Mock] Simulating Amazon login...");
-    const mockTokens = {
-      accessToken: "mock_access_token_" + Date.now(),
-      refreshToken: "mock_refresh_token_" + Date.now(),
-      idToken: "mock_id_token_" + Date.now(),
-      cookies: [{ name: "mock_cookie", value: "mock_value", domain: "amazon.ca" }]
-    };
-    
-    user.amazonAccessToken  = mockTokens.accessToken;
-    user.amazonRefreshToken = mockTokens.refreshToken;
-    user.amazonIdToken      = mockTokens.idToken;
-    user.amazonCookies      = JSON.stringify(mockTokens.cookies);
-    user.amazonTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000); 
-    user.lastAmazonLogin    = new Date();
-    await user.save();
-    
-    console.log(`✅ [Mock] Tokens stored for user ${userId}`);
-    return mockTokens;
-  }
-
-  const tokens = await captureAmazonTokens(user);
-
-  if (!tokens.accessToken && !tokens.cookies.length)
-    throw new Error("Login failed — no tokens captured. Check Amazon credentials.");
-
-  user.amazonAccessToken  = tokens.accessToken;
-  user.amazonRefreshToken = tokens.refreshToken;
-  user.amazonIdToken      = tokens.idToken;
-  user.amazonCookies      = JSON.stringify(tokens.cookies);
-  user.amazonTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000); // assume 1 hr
-  user.lastAmazonLogin    = new Date();
-  await user.save();
-
-  console.log(`✅ Tokens stored for user ${userId}`);
-  return tokens;
-};
-
-/**
  * Silent token refresh using the stored refresh_token.
- * Falls back to full re-login if refresh fails.
+ * Does NOT trigger Playwright login fallback.
  */
 export const refreshAmazonToken = async (userId) => {
   const user = await User.findById(userId);
 
   if (!user.amazonRefreshToken) {
-    console.log("⚠️  No refresh token — doing full re-login...");
-    const t = await loginAndStoreTokens(userId);
-    return t.accessToken;
+    throw new Error(
+      "Amazon session expired (no refresh token). Update Session JSON in Profile."
+    );
   }
 
   try {
@@ -93,9 +42,9 @@ export const refreshAmazonToken = async (userId) => {
     console.log(`🔄 Token silently refreshed for user ${userId}`);
     return user.amazonAccessToken;
   } catch (err) {
-    console.log(`⚠️  Refresh failed (${err.message}) — full re-login...`);
-    const t = await loginAndStoreTokens(userId);
-    return t.accessToken;
+    throw new Error(
+      `Amazon token refresh failed: ${err.message}. Update Session JSON in Profile.`
+    );
   }
 };
 
@@ -106,6 +55,22 @@ export const refreshAmazonToken = async (userId) => {
  */
 export const ensureValidToken = async (userId) => {
   const user = await User.findById(userId);
+  if (!user) throw new Error("User not found");
+
+  // If we only have an access token from Session JSON, use it until expiry.
+  // This prevents refresh loops when no valid Cognito refresh token/client id exists.
+  if (!user.amazonRefreshToken && user.amazonAccessToken) {
+    if (!user.amazonTokenExpiresAt) {
+      user.amazonTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
+      await user.save();
+    }
+    if (user.amazonTokenExpiresAt > new Date()) {
+      return user.amazonAccessToken;
+    }
+    throw new Error(
+      "Amazon session expired (access token only). Update Session JSON in Profile."
+    );
+  }
 
   const expiresSoon =
     !user.amazonTokenExpiresAt ||

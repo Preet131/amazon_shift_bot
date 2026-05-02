@@ -4,6 +4,24 @@ import { checkEligibility } from "../services/eligibilityService.js";
 const profileSelect =
   "-password -amazonPassword -otpEmailPassword -amazonAccessToken -amazonRefreshToken -amazonIdToken -amazonCookies";
 
+function tryExtractNestedToken(rawValue, tokenKind) {
+  if (!rawValue || typeof rawValue !== "string") return "";
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (!parsed || typeof parsed !== "object") return "";
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v !== "string") continue;
+      const key = k.toLowerCase();
+      if (tokenKind === "access" && key.includes("access")) return v;
+      if (tokenKind === "refresh" && key.includes("refresh")) return v;
+      if (tokenKind === "id" && (key === "idtoken" || key.includes("id_token"))) return v;
+    }
+  } catch {
+    // not JSON, ignore
+  }
+  return "";
+}
+
 export const getProfile = async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select(profileSelect).lean();
@@ -42,14 +60,34 @@ export const updateProfile = async (req, res) => {
     if (sessionJson) {
       try {
         const session = JSON.parse(sessionJson);
+        let foundAccess = "";
+        let foundRefresh = "";
+        let foundId = "";
+
         if (session.tokens) {
-          // Look for access token in localStorage dump
+          // Look for token values in localStorage dump (direct or nested JSON strings).
           for (const [k, v] of Object.entries(session.tokens)) {
             const kl = k.toLowerCase();
-            if (kl.includes("access")) user.amazonAccessToken = v;
-            if (kl.includes("refresh")) user.amazonRefreshToken = v;
+            const value = typeof v === "string" ? v.trim() : "";
+            if (kl.includes("access") && value) foundAccess = value;
+            if (kl.includes("refresh") && value) foundRefresh = value;
+            if ((kl === "idtoken" || kl.includes("id_token")) && value) foundId = value;
+
+            if (!foundAccess) foundAccess = tryExtractNestedToken(value, "access");
+            if (!foundRefresh) foundRefresh = tryExtractNestedToken(value, "refresh");
+            if (!foundId) foundId = tryExtractNestedToken(value, "id");
           }
         }
+
+        if (foundAccess) user.amazonAccessToken = foundAccess;
+        if (foundRefresh) user.amazonRefreshToken = foundRefresh;
+        if (foundId) user.amazonIdToken = foundId;
+        if (foundAccess) {
+          // Session JSON usually has no explicit expiry; assume 1h to avoid forced refresh loops.
+          user.amazonTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
+          user.lastAmazonLogin = new Date();
+        }
+
         if (session.cookies) {
            // Basic cookie format
            user.amazonCookies = JSON.stringify([{ name: "session", value: session.cookies, domain: ".amazon.ca", path: "/" }]);

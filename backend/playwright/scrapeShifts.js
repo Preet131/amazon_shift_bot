@@ -2,6 +2,67 @@ import { chromium } from "playwright";
 import User from "../models/User.js";
 import { ensureValidToken } from "../services/amazonAuthService.js";
 
+function parseCookiesFromStoredValue(storedCookies) {
+  if (!storedCookies) return [];
+  let rawList = [];
+  try {
+    const parsed = JSON.parse(storedCookies);
+    if (Array.isArray(parsed)) {
+       if (parsed.length === 1 && parsed[0]?.name === "session") {
+          // Handle raw string "k=v; k2=v2" format
+          const rawString = parsed[0].value || "";
+          rawList = rawString.split(';').filter(c => c.includes('=')).map(c => {
+            const [name, ...val] = c.split('=');
+            return { name: name.trim(), value: val.join('=').trim() };
+          });
+       } else {
+          // Handle standard array format
+          rawList = parsed;
+       }
+    }
+  } catch(e) { return []; }
+
+  // Clean every cookie to ensure it has name, value, path, and url
+  return rawList.filter(c => c && c.name).map(c => {
+     const cookie = {
+        name: String(c.name).trim(),
+        value: String(c.value || ""),
+        path: c.path || "/",
+        domain: c.domain || "hiring.amazon.ca"
+     };
+     // Force URL to satisfy Playwright's requirement
+     const cleanDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+     cookie.url = `https://${cleanDomain}`;
+     
+     return cookie;
+  });
+}
+
+
+async function dismissConsentPopup(page) {
+  const selectors = [
+    'button:has-text("I consent")',
+    'button:has-text("I Consent")',
+    'button:has-text("Accept all")',
+    'button:has-text("Accept All")',
+    'button:has-text("Accept")',
+    "#onetrust-accept-btn-handler",
+  ];
+  for (const sel of selectors) {
+    try {
+      const btn = page.locator(sel).first();
+      if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
+        await btn.click({ timeout: 3000 }).catch(() => {});
+        await page.waitForTimeout(400);
+        return true;
+      }
+    } catch (e) {
+      // Ignore errors if button isn't found
+    }
+  }
+  return false;
+}
+
 /**
  * Scrapes available shifts for a user using their stored session.
  * Uses stored cookies + access token — never re-logs in or triggers OTP.
@@ -11,7 +72,7 @@ import { ensureValidToken } from "../services/amazonAuthService.js";
  */
 export async function scrapeShifts(userId) {
   // 1. Ensure we have a valid (possibly silently refreshed) token
-  const accessToken = await ensureValidToken(userId);
+  await ensureValidToken(userId);
 
   const user = await User.findById(userId);
   if (!user) throw new Error("User not found");
@@ -47,46 +108,44 @@ export async function scrapeShifts(userId) {
     return mockShifts;
   }
 
-  const browser = await chromium.launch({ headless: true });
+  const headless = false;
+  const browser = await chromium.launch({
+    headless,
+    channel: "chrome",
+  });
   const context = await browser.newContext({
     userAgent:
-      "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    viewport: { width: 1366, height: 768 },
+    locale: "en-CA",
+    timezoneId: "America/Toronto",
   });
 
   // 2. Restore stored cookies so Amazon treats this as the same session
+  // 2. Restore stored cookies so Amazon treats this as the same session
   if (user.amazonCookies) {
-    try {
-      const parsed = JSON.parse(user.amazonCookies);
-      
-      // If it's the raw string we injected ("cookie1=val1; cookie2=val2") wrapped in our fake session object:
-      if (Array.isArray(parsed) && parsed.length === 1 && parsed[0].name === "session" && parsed[0].value.includes("=")) {
-        const rawString = parsed[0].value;
-        const formattedCookies = rawString.split(';').filter(Boolean).map(c => {
-          const parts = c.split('=');
-          return {
-            name: parts[0].trim(),
-            value: parts.slice(1).join('=').trim(),
-            domain: '.amazon.ca',
-            path: '/'
-          };
-        });
-        await context.addCookies(formattedCookies);
-      } else {
-        await context.addCookies(parsed);
+    const cookiesToAdd = parseCookiesFromStoredValue(user.amazonCookies);
+    if (!cookiesToAdd.length) {
+      console.warn("⚠️  No usable cookies found in stored session payload.");
+    } else {
+      console.log(`🔍 Attempting to inject ${cookiesToAdd.length} cookies...`);
+      for (const cookie of cookiesToAdd) {
+        try {
+          // Add them one by one to prevent a single bad cookie from crashing the bot
+          await context.addCookies([cookie]);
+        } catch (e) {
+          console.warn(`⏩ Skipping broken cookie [${cookie.name}]: ${e.message}`);
+        }
       }
-    } catch {
-      console.warn("⚠️  Could not parse stored cookies. They might be invalid or empty.");
+      const activeCookies = await context.cookies("https://hiring.amazon.ca");
+      console.log(`✅ Injected ${activeCookies.length} valid cookies.`);
     }
   }
 
+
   const page = await context.newPage();
 
-  // 3. Inject token into every outgoing request header
-  await page.setExtraHTTPHeaders({
-    Authorization: `Bearer ${accessToken}`,
-  });
-
-  // 4. Intercept JSON API responses that contain shift data
+  // 3. Intercept JSON API responses that contain shift data
   const scrapedShifts = [];
 
   page.on("response", async (response) => {
@@ -117,16 +176,32 @@ export async function scrapeShifts(userId) {
   });
 
   try {
-    // 5. Navigate to the schedule / shifts page
-    await page.goto("https://hiring.amazon.ca/app#/schedule", {
+    // 4. Navigate to the schedule / shifts page
+    await page.goto("https://hiring.amazon.ca/app#/jobSearch", {
       waitUntil: "networkidle",
-      timeout: 30_000,
+      timeout: 50_000,
     });
 
-    // Give lazy-loaded content time to settle
-    await page.waitForTimeout(5_000);
+    // Fail fast with a clear error if CloudFront blocks automation traffic.
+    const html = await page.content();
+    const title = await page.title().catch(() => "");
+    if (
+      title.includes("403 ERROR") ||
+      html.includes("Generated by cloudfront") ||
+      html.includes("Request blocked. We can't connect to the server for this app or website at this time.")
+    ) {
+      throw new Error(
+        "Amazon blocked this browser session (CloudFront 403). Refresh Session JSON in Profile and retry."
+      );
+    }
 
-    // 6. Fallback — try DOM scraping if API interception returned nothing
+    // Clear cookie/consent overlays that can hide shift cards.
+    await dismissConsentPopup(page);
+
+    // Give lazy-loaded content time to settle
+    await page.waitForTimeout(10_000);
+
+    // 5. Fallback — try DOM scraping if API interception returned nothing
     if (!scrapedShifts.length) {
       const domShifts = await page.evaluate(() => {
         const selectors = [

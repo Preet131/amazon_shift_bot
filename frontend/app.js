@@ -84,7 +84,6 @@ function nav(page) {
     overview: 'Overview',
     bot:      'Bot Control',
     shifts:   'Shifts',
-    amazon:   'Amazon Account',
     profile:  'Profile',
   }[page] || page;
   renderPage();
@@ -147,7 +146,6 @@ function renderShell() {
         ${navItem('bot','⚡','Bot Control')}
         ${navItem('shifts','📋','Shifts')}
         <div class="nav-section-label">Settings</div>
-        ${navItem('amazon','🔑','Amazon Account')}
         ${navItem('profile','👤','Profile')}
         <div class="sidebar-bottom">
           <div class="user-card">
@@ -188,7 +186,6 @@ async function renderPage() {
     case 'overview': await pageOverview(el); break;
     case 'bot':      await pageBot(el);      break;
     case 'shifts':   await pageShifts(el);   break;
-    case 'amazon':   await pageAmazon(el);   break;
     case 'profile':  await pageProfile(el);  break;
   }
 }
@@ -196,10 +193,7 @@ async function renderPage() {
 async function pageOverview(el) {
   el.innerHTML = `<div class="loading-state"><div class="spinner"></div> Loading...</div>`;
   try {
-    const [bot, tokenStatus] = await Promise.all([
-      api('GET', '/api/bot/status').catch(() => ({ running: false })),
-      api('GET', '/api/amazon-auth/status').catch(() => ({ hasAccessToken: false })),
-    ]);
+    const bot = await api('GET', '/api/bot/status').catch(() => ({ running: false }));
     el.innerHTML = `
       <div class="stat-grid">
         <div class="stat-card ${bot.running ? 'green' : 'blue'}">
@@ -212,11 +206,6 @@ async function pageOverview(el) {
           <div class="stat-value">${bot.lastShiftsFound ?? '—'}</div>
           <div class="stat-sub">Last scan</div>
         </div>
-        <div class="stat-card ${tokenStatus.hasAccessToken && !tokenStatus.isExpired ? 'green' : 'orange'}">
-          <div class="stat-label">Amazon Token</div>
-          <div class="stat-value">${tokenStatus.hasAccessToken ? (tokenStatus.isExpired ? '⚠️' : '✅') : '❌'}</div>
-          <div class="stat-sub">${tokenStatus.hasAccessToken ? (tokenStatus.isExpired ? 'Expired' : 'Active') : 'Not connected'}</div>
-        </div>
         <div class="stat-card blue">
           <div class="stat-label">Last Scan</div>
           <div class="stat-value" style="font-size:16px">${bot.lastRun ? new Date(bot.lastRun).toLocaleTimeString() : '—'}</div>
@@ -227,9 +216,7 @@ async function pageOverview(el) {
         <div class="card">
           <div class="card-title">Quick Actions</div>
           <div class="stack">
-            ${!tokenStatus.hasAccessToken ? `
-              <button class="btn btn-primary" onclick="nav('amazon')">🔑 Connect Amazon Account</button>` : `
-              <button class="btn btn-primary" onclick="nav('bot')">${bot.running ? '⚡ Manage Bot' : '▶ Start Bot'}</button>`}
+            <button class="btn btn-primary" onclick="nav('bot')">${bot.running ? '⚡ Manage Bot' : '▶ Start Bot'}</button>
             <button class="btn btn-secondary" onclick="nav('shifts')">📋 View Shifts</button>
             <button class="btn btn-secondary" onclick="nav('profile')">👤 Edit Profile</button>
           </div>
@@ -383,98 +370,13 @@ function shiftCard(s) {
     </div>`;
 }
 
-async function pageAmazon(el) {
-  el.innerHTML = `<div class="loading-state"><div class="spinner"></div> Loading...</div>`;
-  try {
-    const ts = await api('GET', '/api/amazon-auth/status').catch(() => ({}));
-    el.innerHTML = `
-      <div class="two-col">
-        <div class="stack">
-          <div class="card">
-            <div class="card-title">Token Status</div>
-            <div class="token-row"><span class="token-key">Access Token</span>
-              <span class="badge-pill ${ts.hasAccessToken ? 'badge-green' : 'badge-red'}">${ts.hasAccessToken ? '✅ Present' : '❌ Missing'}</span></div>
-            <div class="token-row"><span class="token-key">Refresh Token</span>
-              <span class="badge-pill ${ts.hasRefreshToken ? 'badge-green' : 'badge-red'}">${ts.hasRefreshToken ? '✅ Present' : '❌ Missing'}</span></div>
-            <div class="token-row"><span class="token-key">Expires At</span>
-              <span class="token-value">${ts.tokenExpiresAt ? new Date(ts.tokenExpiresAt).toLocaleString() : '—'}</span></div>
-            <div class="token-row"><span class="token-key">Last Login</span>
-              <span class="token-value">${ts.lastLogin ? new Date(ts.lastLogin).toLocaleString() : 'Never'}</span></div>
-            <div class="divider"></div>
-            <div class="stack">
-              <button class="btn btn-primary btn-full" onclick="amazonLogin()">🔑 ${ts.hasAccessToken ? 'Re-connect' : 'Connect'} Amazon</button>
-              ${ts.hasAccessToken ? `<button class="btn btn-secondary btn-full btn-sm" onclick="amazonRefresh()">🔄 Force Refresh Token</button>` : ''}
-            </div>
-          </div>
-          <div class="card">
-            <div class="card-title">Kiosk PIN</div>
-            <p style="font-size:12px;color:var(--text2);margin-bottom:14px">Store your kiosk PIN for reference (not used for login).</p>
-            <div class="form-group"><label>PIN</label><input id="kiosk-pin" type="text" placeholder="e.g. 1234" /></div>
-            <button class="btn btn-secondary btn-full btn-sm" onclick="savePin()">💾 Save PIN</button>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-title">OTP Email Config</div>
-          <p style="font-size:12px;color:var(--text2);margin-bottom:16px">When Amazon sends an OTP, the bot reads it from your inbox automatically via IMAP.</p>
-          <div class="form-group"><label>Email Address</label><input id="otp-email" type="email" placeholder="your@gmail.com" /></div>
-          <div class="form-group"><label>App Password</label><input id="otp-pass" type="password" placeholder="Gmail app password" /></div>
-          <div class="form-group"><label>IMAP Host</label><input id="otp-host" type="text" placeholder="imap.gmail.com" value="imap.gmail.com" /></div>
-          <button class="btn btn-primary btn-full" onclick="saveOtpConfig()">💾 Save OTP Config</button>
-          <p style="font-size:11px;color:var(--text3);margin-top:12px">💡 For Gmail: enable 2FA and create an App Password at myaccount.google.com/apppasswords</p>
-        </div>
-      </div>`;
-  } catch(e) {
-    el.innerHTML = `<div class="empty-state"><p>${e.message}</p></div>`;
-  }
-}
-
-async function amazonLogin() {
-  const btn = event.target;
-  btn.disabled = true; btn.textContent = '⏳ Launching browser…';
-  try {
-    await api('POST', '/api/amazon-auth/login');
-    toast('Amazon login successful! Tokens stored.');
-    pageAmazon(document.getElementById('content'));
-  } catch(e) {
-    toast(e.message, 'error');
-    btn.disabled = false; btn.textContent = '🔑 Connect Amazon';
-  }
-}
-
-async function amazonRefresh() {
-  try {
-    await api('POST', '/api/amazon-auth/refresh');
-    toast('Token refreshed silently!');
-    pageAmazon(document.getElementById('content'));
-  } catch(e) { toast(e.message, 'error'); }
-}
-
-async function savePin() {
-  const pin = document.getElementById('kiosk-pin').value.trim();
-  if (!pin) return toast('Enter a PIN', 'error');
-  try {
-    await api('POST', '/api/amazon-auth/set-pin', { pin });
-    toast('Kiosk PIN saved!');
-  } catch(e) { toast(e.message, 'error'); }
-}
-
-async function saveOtpConfig() {
-  const body = {
-    otpEmail:         document.getElementById('otp-email').value.trim(),
-    otpEmailPassword: document.getElementById('otp-pass').value.trim(),
-    otpEmailHost:     document.getElementById('otp-host').value.trim() || 'imap.gmail.com',
-  };
-  if (!body.otpEmail || !body.otpEmailPassword) return toast('Fill in email and password', 'error');
-  try {
-    await api('POST', '/api/amazon-auth/set-otp-email', body);
-    toast('OTP email config saved!');
-  } catch(e) { toast(e.message, 'error'); }
-}
-
 async function pageProfile(el) {
   el.innerHTML = `<div class="loading-state"><div class="spinner"></div> Loading profile…</div>`;
   try {
     const p = await api('GET', '/api/user/profile');
+    const sessionSnippet =
+`var data = { tokens: { ...localStorage }, cookies: document.cookie };
+prompt("Copy this Session JSON and paste it into the Bot Dashboard:", JSON.stringify(data));`;
     el.innerHTML = `
     <div class="two-col">
       <div class="stack">
@@ -515,6 +417,15 @@ async function pageProfile(el) {
           <div class="card-title">Telegram alerts</div>
           <p style="font-size:12px;color:var(--text2);margin-bottom:12px">Set <code>TELEGRAM_BOT_TOKEN</code> on the server. Message your bot, then paste your numeric chat ID here (from @userinfobot or similar).</p>
           <div class="form-group"><label>Telegram chat ID</label><input id="p-telegram" type="text" placeholder="e.g. 123456789" autocomplete="off" /></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Get Session JSON (easy copy)</div>
+          <p style="font-size:12px;color:var(--text2);margin-bottom:12px">Open <code>hiring.amazon.ca</code> in your normal Chrome (already logged in), press <code>F12</code> → Console, paste this, then copy the popup JSON into “Session JSON Payload”.</p>
+          <div class="form-group">
+            <label>Console script</label>
+            <textarea id="p-session-snippet" rows="3" readonly style="width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px; border-radius: 4px; font-family: monospace;"></textarea>
+          </div>
+          <button class="btn btn-secondary btn-full btn-sm" onclick="copySessionSnippet()">📋 Copy script</button>
         </div>
         <div class="card">
           <div class="card-title">Auto-Apply</div>
@@ -569,6 +480,7 @@ async function pageProfile(el) {
     document.getElementById('p-pay').value = p.filters?.minPay != null ? p.filters.minPay : '';
     document.getElementById('p-timing').value = p.filters?.preferredTiming || 'flexible';
     document.getElementById('p-telegram').value = p.botSettings?.notifyTelegramId || '';
+    document.getElementById('p-session-snippet').value = sessionSnippet;
     document.getElementById('p-autoapply').checked = !!p.botSettings?.autoApply;
     document.getElementById('p-gender').value = p.autoApplyProfile?.gender || '';
     document.getElementById('p-work-auth').value = p.autoApplyProfile?.workAuthorization || '';
@@ -582,6 +494,20 @@ async function pageProfile(el) {
     document.getElementById('p-address-history-json').value = JSON.stringify(p.autoApplyProfile?.addressHistory || [], null, 2);
   } catch (e) {
     el.innerHTML = `<div class="empty-state"><p>${e.message}</p></div>`;
+  }
+}
+
+async function copySessionSnippet() {
+  const t = document.getElementById('p-session-snippet');
+  if (!t) return;
+  try {
+    await navigator.clipboard.writeText(t.value);
+    toast('Copied script to clipboard');
+  } catch {
+    t.focus();
+    t.select();
+    document.execCommand('copy');
+    toast('Copied script to clipboard');
   }
 }
 
@@ -662,13 +588,9 @@ window.nav         = nav;
 window.logout      = logout;
 window.botStart    = botStart;
 window.botStop     = botStop;
-window.amazonLogin = amazonLogin;
-window.amazonRefresh = amazonRefresh;
-window.savePin     = savePin;
-window.saveOtpConfig = saveOtpConfig;
 window.saveProfile = saveProfile;
 window.pageShifts  = pageShifts;
-window.pageAmazon  = pageAmazon;
 window.toggleShiftsShowAll = toggleShiftsShowAll;
+window.copySessionSnippet = copySessionSnippet;
 
 render();
